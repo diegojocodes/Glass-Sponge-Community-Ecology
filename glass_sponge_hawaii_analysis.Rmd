@@ -1,0 +1,1170 @@
+---
+title: "Deep-Sea Glass Sponge Community Ecology in the Hawaiian Archipelago"
+author: "Diego Johansen, Marine Scientist, Kailua-Kona, Hawai'i"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    df_print: kable
+    latex_engine: xelatex
+    highlight: tango
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    number_sections: true
+    self_contained: true
+    code_folding: show
+    df_print: paged
+    fig_caption: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.align = "center",
+  fig.width = 7.5, fig.height = 5,
+  out.width = "100%",   # scale every figure to the page/column width (prevents PDF clipping)
+  dpi = 150
+)
+
+# Keep wide tables from overflowing the PDF page margins.
+options(knitr.kable.NA = "")
+if (knitr::is_latex_output()) {
+  knitr::opts_chunk$set(fig.width = 6.5, fig.height = 4.2)
+}
+```
+
+```{r libraries}
+library(tidyverse)
+library(stringr)
+library(forcats)
+library(vegan)
+library(GGally)
+library(viridis)
+library(patchwork)
+library(scales)
+```
+
+# Summary {-}
+
+Glass sponges (class Hexactinellida) are deep-sea filter feeders that build intricate skeletons of
+silica. Those skeletons form biogenic structure on the seafloor that other deep-sea organisms rely
+on for shelter and settlement. Because the animals occur at depths that are rarely surveyed, most of
+what is known about them comes from opportunistic remotely operated vehicle (ROV) and submersible
+dives rather than from systematic sampling programs.
+
+This report analyzes 964 such observations from around the Main Hawaiian Islands, collected by
+NOAA's Office of Ocean Exploration and Research. The central question is simple to state but
+difficult to answer rigorously: which environmental and geographic factors determine where
+particular glass sponges occur?
+
+The most strongly supported answer is depth. Individual species occupy distinct depth ranges, and
+that pattern persists across every analysis applied here. A secondary question — whether sponge
+communities differ from one island to another — is treated more cautiously, because island identity
+is confounded with how each dive was conducted: the equipment used, the amount of search effort, and
+the specific locations visited. Without accounting for these factors, ordinary differences in
+sampling could be mistaken for genuine ecological ones.
+
+The analysis is presented in two stages. The first describes the structure of the dataset directly.
+The second is more rigorous: it treats each dive as the unit of analysis, corrects for the large
+differences in how much each dive recorded, and subjects every conclusion to a set of checks before
+accepting it. The aim throughout is to be explicit about what these data can and cannot demonstrate.
+
+A practical note: the R code is shown for transparency, but it can be collapsed with the *Code*
+buttons at the right of each block for easier reading.
+
+# The Dataset
+
+Each record in this dataset represents a single glass sponge observed during a deep-sea dive in the
+Hawaiian Islands. NOAA compiled the records across several expeditions conducted with ROVs and
+crewed submersibles, yielding 964 observations in total. For each observation, the dataset documents
+the organism's identity, the depth at which it was seen, and its location.
+
+Specifically, each record includes:
+
+- the scientific name and the taxonomic rank to which the sponge was identified (ranging from genus to subspecies)
+- the depth of observation, in meters
+- geographic coordinates (latitude and longitude)
+- a locality descriptor (an island, a seamount, or a named feature)
+- dive identifiers (Station, EventID, and SurveyID, which records the expedition), along with the sampling equipment used
+
+The dive identifiers are more consequential than they first appear. Because they link each
+observation to a specific dive, they make it possible to treat the dive — rather than the individual
+sponge — as the unit of analysis. This is a key methodological point: aggregating to the dive level
+is what keeps the statistical tests later in the report valid rather than misleading.
+
+```{r load-data}
+data <- read_csv("data/glass_sponges.csv")
+```
+
+# Data Cleaning and Preparation
+
+The raw data require several preparation steps before analysis. Locality names were recorded
+inconsistently across expeditions, so the first task is to standardize them into consistent
+island-level labels. The second is to retain the dive-level metadata (Station, sampling gear, and
+expedition), which the inferential analysis depends on heavily. Finally, observations identified only
+to coarse taxonomic ranks (class or order) are removed, so that the community comparisons are made at
+a consistent level of taxonomic resolution. The specific steps are as follows:
+
+1. Create a lookup table for irregular locality names that don't follow a standard pattern.
+2. Remove administrative/metadata columns not needed for ecological analysis.
+3. Filter out off-scope seamount sites (Ellis, McCall) outside the Hawaiian Islands focus area.
+4. Standardize locality names to island-level identifiers.
+5. Retain only observations identified to genus level or finer (genus, subgenus, family, subfamily, species, subspecies), excluding records identified only to class or order.
+
+```{r clean-data}
+specific_to_island <- c(
+  "Mahukona fissure"          = "Mahukona fissure, Hawaii",
+  "Mahukona 900m Terrace"     = "Mahukona 900m Terrace, Hawaii",
+  "Mahukona 900m Terrace II"  = "Mahukona 900m Terrace II, Hawaii",
+  "Canyon Head 2 Kohala"      = "Canyon Head 2 Kohala, Hawaii",
+  "Kohala Plunge Pool I"      = "Kohala Plunge Pool I, Hawaii",
+  "Waianae Landslide"         = "Waianae Landslide, Oahu",
+  "Kahoolawe Rift I"          = "Kahoolawe",
+  "Kahoolawe Rift II"         = "Kahoolawe",
+  "Plunge Pool Molokai"       = "Molokai",
+  "Kauai Cones II"            = "Kauai"
+)
+
+cleaned_sponges <- data %>%
+  # Keep dive-level identifiers (Station, EventID, SurveyID), sampling gear, and
+  # date so we can use the dive as the sampling unit and account for effort.
+  select(-ShallowFlag, -DatasetID, -CatalogNumber, -SampleID, -ImageURL,
+         -Repository, -VernacularNameCategory, -IdentificationQualifier,
+         -DepthMethod, -RecordType, -DataProvider, -`LocationAccuracy (m)`) %>%
+  filter(!Locality %in% c("Hawaiian Archipelago, Ellis Seamount",
+                           "Hawaiian Archipelago, McCall Seamount")) %>%
+  mutate(Locality = case_when(
+    str_detect(Locality, "^Main Hawaiian Islands(, Hawaii Island,| \\| Hawaii \\|)\\s*") ~
+      str_replace(Locality, "^Main Hawaiian Islands(, Hawaii Island,| \\| Hawaii \\|)\\s*", "") %>%
+      paste0(", Hawaii"),
+    str_detect(Locality, "^Main Hawaiian Islands(, Oahu Island,| \\| Oahu \\|)\\s*") ~
+      str_replace(Locality, "^Main Hawaiian Islands(, Oahu Island,| \\| Oahu \\|)\\s*", "") %>%
+      paste0(", Oahu"),
+    Locality %in% names(specific_to_island) ~ specific_to_island[Locality],
+    TRUE ~ Locality
+  )) %>%
+  # Derive a clean island-level grouping from the standardized locality string.
+  mutate(Island = case_when(
+    str_detect(Locality, regex("oahu", ignore_case = TRUE))      ~ "Oahu",
+    str_detect(Locality, regex("kahoolawe", ignore_case = TRUE)) ~ "Kahoolawe",
+    str_detect(Locality, regex("molokai", ignore_case = TRUE))   ~ "Molokai",
+    str_detect(Locality, regex("kauai", ignore_case = TRUE))     ~ "Kauai",
+    str_detect(Locality, regex("maui", ignore_case = TRUE))      ~ "Maui",
+    str_detect(Locality, regex("hawaii|mahukona|kohala|south pt", ignore_case = TRUE)) ~ "Hawaii",
+    TRUE ~ "Other"
+  )) %>%
+  filter(TaxonRank %in% c("genus", "subgenus", "family", "subfamily", "subspecies", "species"))
+
+summary(cleaned_sponges)
+```
+
+The summary above serves as an integrity check on the cleaned dataset. It confirms that depths and
+coordinates fall within plausible ranges, that key fields contain no unexpected missing values, and
+that the island grouping was assigned correctly. With the data validated, the following sections
+describe its structure in detail.
+
+# Summary Statistics
+
+Before modeling, it is useful to characterize the cleaned dataset directly. The tables below
+summarize the observations along several dimensions — taxonomic resolution, species frequency,
+locality, and depth. Two patterns emerge early and recur throughout the analysis: glass sponges are
+strongly structured by depth, and the dives that produced these records varied substantially in
+their sampling effort.
+
+**Table 1. Records by taxonomic rank.** The level of identification varies considerably, from
+subspecies down to genus. This inconsistency is worth noting at the outset, because it could
+influence community comparisons; later, a sensitivity analysis collapses all identifications to genus
+to test whether the conclusions depend on taxonomic resolution.
+
+```{r tax-rank}
+cleaned_sponges %>%
+  count(TaxonRank, name = "n_observations") %>%
+  arrange(desc(n_observations))
+```
+
+**Table 2. The ten most frequently observed taxa.** A small number of taxa account for the majority
+of records, while many others appear only a handful of times. This long tail of rarely observed
+species is one reason for caution in the later statistical tests: there is limited information
+available for the uncommon taxa.
+
+```{r top-species}
+cleaned_sponges %>%
+  count(ScientificName, sort = TRUE, name = "n_observations") %>%
+  head(10)
+```
+
+**Table 3. Observations per locality.** The records are distributed unevenly across sites, with a
+few localities contributing most of the observations. This imbalance in sampling effort is the
+primary reason the analysis relies on the dive as the unit of analysis rather than pooling all
+observations together.
+
+```{r obs-per-locality}
+cleaned_sponges %>%
+  count(Locality, sort = TRUE, name = "n_observations")
+```
+
+**Table 4. Depth ranges of the most-observed taxa.** Mean, minimum, and maximum depth for the most
+frequently recorded taxa. Taxa whose depth ranges show little overlap provide the first indication
+of depth partitioning — different species occupying distinct portions of the water column.
+
+```{r depth-by-species}
+cleaned_sponges %>%
+  group_by(ScientificName) %>%
+  summarise(
+    mean_depth = round(mean(`DepthInMeters (m)`, na.rm = TRUE), 1),
+    min_depth  = min(`DepthInMeters (m)`, na.rm = TRUE),
+    max_depth  = max(`DepthInMeters (m)`, na.rm = TRUE),
+    n_obs      = n(),
+    .groups    = "drop"
+  ) %>%
+  arrange(desc(n_obs)) %>%
+  slice_head(n = 10)
+```
+
+**Table 5. Depth range and sampling effort by locality.** This combines where sampling occurred with
+how deep and how intensively each site was surveyed. It is useful for identifying sites that were
+both shallow and lightly sampled, which warrant particular caution in interpretation.
+
+```{r depth-by-locality}
+cleaned_sponges %>%
+  group_by(Locality) %>%
+  summarise(
+    mean_depth = round(mean(`DepthInMeters (m)`, na.rm = TRUE), 1),
+    min_depth  = min(`DepthInMeters (m)`, na.rm = TRUE),
+    max_depth  = max(`DepthInMeters (m)`, na.rm = TRUE),
+    n_obs      = n(),
+    .groups    = "drop"
+  ) %>%
+  arrange(desc(n_obs))
+```
+
+**Table 6. Species richness by locality.** The number of distinct taxa recorded at each site. This
+raw richness is deliberately not yet interpreted ecologically: sites with more observations tend to
+show higher richness simply because they were sampled more intensively. The inferential section
+corrects for this using rarefaction.
+
+```{r richness-by-locality}
+cleaned_sponges %>%
+  group_by(Locality) %>%
+  summarise(species_richness = n_distinct(ScientificName), .groups = "drop") %>%
+  arrange(desc(species_richness))
+```
+
+# Exploratory Visualizations
+
+The following four figures visualize the patterns suggested by the summary tables. They are
+descriptive rather than confirmatory: they show where and at what depths sponges were observed, but
+they do not yet account for differences in sampling effort between dives. They are best read as
+orientation for the formal analysis that follows.
+
+## Mean depth by species
+
+This figure provides a first look at depth partitioning. If species occupy genuinely different
+depths, their mean values should spread across a wide range rather than cluster around a single
+value.
+
+```{r chart1-mean-depth, fig.cap="Mean observed depth for each glass sponge taxon, ordered from deepest to shallowest. The spread of values across taxa is the first visual evidence that different species occupy different depth bands."}
+species_depth_summary <- cleaned_sponges %>%
+  group_by(ScientificName) %>%
+  summarise(mean_depth = mean(`DepthInMeters (m)`, na.rm = TRUE)) %>%
+  arrange(desc(mean_depth))
+
+ggplot(species_depth_summary,
+       aes(x = reorder(ScientificName, mean_depth), y = mean_depth, fill = ScientificName)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_text(aes(label = paste0(round(mean_depth, 0), " m")),
+            hjust = -0.2, size = 4, fontface = "bold") +
+  coord_flip() +
+  scale_y_reverse(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    title = "Mean Depth of Glass Sponges by Species",
+    x = "Scientific Name",
+    y = "Mean Depth (m)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+    plot.title.position = "plot",
+    axis.text.y = element_text(face = "italic")
+  )
+```
+
+## Overall depth distribution
+
+This histogram shows how observations are distributed across the water column. Its shape indicates
+which depths the dataset can characterize with confidence and which are only sparsely represented.
+
+```{r chart2-depth-histogram, fig.cap="Distribution of all glass sponge observations across depth. Most records concentrate in the upper part of the surveyed range, with progressively fewer observations at greater depths."}
+ggplot(cleaned_sponges, aes(x = `DepthInMeters (m)`)) +
+  geom_histogram(bins = 30, fill = "#1f78b4", color = "white", alpha = 0.9) +
+  labs(
+    title = "Depth Distribution of Glass Sponge Observations",
+    x = "Depth (m)",
+    y = "Number of Observations"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+## Depth distribution by site
+
+Each point represents one observation. Beyond differences in the number of sponges recorded, sites
+also differ in the depth range each one covered. This is an early indication that locality and depth
+effects will be difficult to separate fully — a theme the inferential analysis addresses directly.
+
+```{r chart3-depth-by-site, fig.cap="Depth of every observation, grouped by site. Differences in both the number of points and their depth spread reflect how unevenly the sites were sampled."}
+ggplot(cleaned_sponges, aes(x = Locality, y = `DepthInMeters (m)`, color = Locality)) +
+  geom_jitter(width = 0.2, alpha = 0.6, size = 2) +
+  labs(
+    title = "Depth Distribution of Glass Sponges by Site",
+    x = "Site",
+    y = "Depth (m)"
+  ) +
+  coord_flip() +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    legend.position = "none"
+  )
+```
+
+## Depth ranges by species
+
+This figure offers the clearest exploratory evidence of depth partitioning. Where the boxes sit at
+distinct heights with limited overlap, those species are occupying separate depth bands rather than
+ranging freely throughout the water column.
+
+```{r chart4-depth-boxplot, fig.cap="Depth range (box) and individual observations (points) for each taxon. Non-overlapping boxes indicate species partitioning the water column by depth — the central pattern the inferential analysis goes on to test formally."}
+ggplot(cleaned_sponges,
+       aes(x = fct_reorder(ScientificName, `DepthInMeters (m)`), y = `DepthInMeters (m)`)) +
+  geom_boxplot(fill = "steelblue", color = "black", alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.4, size = 1.8, color = "darkblue") +
+  labs(
+    title = "Depth Ranges of Glass Sponges by Species",
+    x = "Scientific Name",
+    y = "Depth (m)"
+  ) +
+  coord_flip() +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.y = element_text(face = "italic", size = 10),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+## Depth distribution by species (ridgelines)
+
+The boxplot above summarizes each species' depth range; this figure shows the full *shape* of each
+distribution. Every species is drawn as a smoothed density curve along the depth axis and stacked in
+order of median depth, so depth partitioning appears as a staircase of curves shifting steadily
+deeper. Only taxa with at least five observations are shown, since density estimates are unreliable
+for very few points. (This figure requires the `ggridges` package; it is skipped automatically if the
+package is not installed.)
+
+```{r ridgeline, fig.height=6.5, fig.cap="Smoothed depth distributions for each taxon with at least five observations, ordered by median depth and shaded by depth. The progressive downward shift of the curves illustrates depth partitioning among species."}
+if (requireNamespace("ggridges", quietly = TRUE)) {
+  ridge_dat <- cleaned_sponges %>%
+    add_count(ScientificName, name = "n_sp") %>%
+    filter(n_sp >= 5)
+
+  ggplot(ridge_dat,
+         aes(x = `DepthInMeters (m)`,
+             y = fct_reorder(ScientificName, `DepthInMeters (m)`, .fun = median),
+             fill = after_stat(x))) +
+    ggridges::geom_density_ridges_gradient(scale = 2.2, rel_min_height = 0.01,
+                                           colour = "white", linewidth = 0.3) +
+    scale_fill_viridis(option = "mako", direction = -1, name = "Depth (m)") +
+    labs(title = "Depth Distribution of Glass Sponges by Species",
+         x = "Depth (m)", y = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(plot.title = element_text(face = "bold"),
+          axis.text.y = element_text(face = "italic"))
+} else {
+  message("Install the 'ggridges' package to render the depth ridgeline plot.")
+}
+```
+
+# Ordination: Visualizing Community Structure
+
+The next analyses address a more complex question: which localities support similar assemblages of
+sponges, and which differ? The standard tool for this is ordination. The principle is more intuitive
+than the terminology suggests: a large table recording which species occurred where, and in what
+numbers, is reduced to a two-dimensional map on which localities with similar communities appear
+close together and dissimilar localities appear far apart. Two complementary methods are used here —
+Non-metric Multidimensional Scaling (NMDS) and Principal Coordinates Analysis (PCoA) — which are two
+established ways of producing such a map.
+
+Both methods begin from a single measure of how *different* any two localities' communities are: the
+**Bray–Curtis dissimilarity**, the conventional choice in community ecology. For a pair of sites it
+ranges from 0 to 1. A value of 0 means the two sites have identical communities — the same taxa in
+the same proportions — while a value of 1 means they share no taxa at all. It is computed by
+comparing the abundance of every taxon between the two sites, summing the differences, and scaling by
+the combined total, so that both *which* taxa are present and *how abundant* each one is contribute to
+the result. Bray–Curtis is well suited to ecological data because it ignores joint absences (two
+sites are not considered similar merely because many taxa are missing from both) and because it
+responds to differences in abundance rather than presence alone. Every ordination and statistical
+test in this section is built on this measure.
+
+> An important caveat applies to this section. This first ordination groups the data by *locality*
+> and uses raw observation counts, so a more heavily sampled site appears more abundant even when it
+> is not. With only a handful of localities, statistical power is also limited. These plots should
+> therefore be read as an exploratory sketch. The rigorous version — one point per dive, with effort
+> accounted for and claims formally tested — follows in the next section.
+
+## Building the community matrix
+
+```{r build-community-matrix}
+top_localities <- cleaned_sponges %>%
+  count(Locality) %>%
+  slice_max(n, n = 10) %>%
+  pull(Locality)
+
+filtered_sponges <- cleaned_sponges %>%
+  filter(Locality %in% top_localities) %>%
+  filter(Locality != "Mahukona fissure, Hawaii")
+
+community_matrix <- filtered_sponges %>%
+  count(Locality, ScientificName) %>%
+  pivot_wider(names_from = ScientificName, values_from = n, values_fill = 0) %>%
+  column_to_rownames("Locality") %>%
+  .[rowSums(.) > 0, ]
+
+dim(community_matrix)
+```
+
+## NMDS ordination
+
+```{r nmds}
+nmds <- metaMDS(community_matrix, distance = "bray", k = 2, trymax = 100)
+print(nmds)
+stressplot(nmds, main = "Shepard Plot for NMDS (Bray-Curtis)")
+```
+
+## NMDS goodness of fit
+
+The "stress" value reported by the ordination quantifies how much information is lost when the
+community data are compressed into two dimensions. Lower values indicate a better representation; by
+convention, stress below approximately 0.2 is considered an acceptable fit.
+
+```{r nmds-goodness}
+site_goodness <- goodness(nmds)
+site_scores_base <- scores(nmds, display = "sites")
+
+plot(nmds, type = "n", main = "NMDS Goodness of Fit")
+points(site_scores_base,
+       cex = rescale(site_goodness, to = c(1, 6)),
+       pch = 21, bg = "skyblue")
+text(site_scores_base, labels = rownames(site_scores_base), cex = 0.7, pos = 3)
+```
+
+## PCoA and scree plot
+
+Principal Coordinates Analysis (PCoA) provides an alternative ordination of the same dissimilarity
+matrix. The accompanying scree plot shows the proportion of total community variation captured by
+each ordination axis, indicating whether the first few axes account for most of the structure.
+
+```{r pcoa-scree}
+bray_dist   <- vegdist(community_matrix, method = "bray")
+pcoa        <- cmdscale(bray_dist, eig = TRUE, k = nrow(community_matrix) - 1)
+eig_vals    <- pcoa$eig
+var_explained <- eig_vals / sum(eig_vals[eig_vals > 0]) * 100
+
+scree_df <- data.frame(
+  Axis     = paste0("PCo", seq_along(var_explained)),
+  Variance = var_explained
+)
+
+ggplot(scree_df[1:10, ], aes(x = Axis, y = Variance)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0(round(Variance, 1), "%")), vjust = -0.5, size = 4) +
+  labs(
+    title = "Scree Plot of PCoA (Bray-Curtis)",
+    x = "Principal Coordinate Axis",
+    y = "Variance Explained (%)"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+## NMDS with depth and island overlaid
+
+This figure presents the same NMDS ordination, annotated so the ecological patterns are easier to
+read. Several elements guide interpretation:
+
+- **Position and distance.** Each point is a locality, and the spacing between points reflects
+  Bray–Curtis dissimilarity: points close together support similar sponge communities, while points
+  far apart share few taxa or very different proportions. Only relative distances carry meaning — the
+  axes have no units, and the entire configuration can be rotated or flipped without changing its
+  interpretation.
+- **Color.** Points are shaded by each locality's mean sampling depth. If depth structures the
+  communities, the colors should grade smoothly across the ordination rather than being scattered at
+  random — a visual counterpart to the formal depth tests later in the report.
+- **Island hulls.** Localities belonging to the same island are enclosed in a shaded polygon. Hulls
+  that occupy separate regions with little overlap would indicate that islands support distinct
+  communities; substantially overlapping hulls indicate they do not. Given the small number of
+  localities, this should be read as suggestive rather than conclusive.
+- **Species vectors.** The green arrows point toward the taxa most strongly associated with each
+  region of the map; a locality positioned in the direction of a given arrow tends to be relatively
+  rich in that taxon.
+
+As with the other plots in this section, this is the locality-level, effort-naive version. The
+formally tested, dive-level ordination — with environmental vectors fitted and significance assessed
+— appears later in the inferential analysis.
+
+```{r nmds-biplot, fig.cap="Exploratory NMDS ordination of localities (Bray-Curtis). Points are sites colored by mean depth; arrows are species; hulls group localities by island. Read distances between points as community similarity. Exploratory only — see the inferential section for tested versions."}
+site_scores <- scores(nmds, display = "sites") %>%
+  as.data.frame() %>%
+  rownames_to_column("Locality")
+
+site_meta <- cleaned_sponges %>%
+  filter(Locality %in% site_scores$Locality) %>%
+  group_by(Locality) %>%
+  summarise(
+    depth     = mean(`DepthInMeters (m)`, na.rm = TRUE),
+    Island    = word(Locality, -1),
+    latitude  = mean(`latitude (degrees_north)`, na.rm = TRUE),
+    longitude = mean(`longitude (degrees_east)`, na.rm = TRUE)
+  )
+
+site_scores <- left_join(site_scores, site_meta, by = "Locality")
+
+species_scores <- scores(nmds, display = "species") %>%
+  as.data.frame() %>%
+  rownames_to_column("ScientificName")
+
+hulls <- site_scores %>%
+  group_by(Island) %>%
+  slice(chull(NMDS1, NMDS2))
+
+ggplot() +
+  geom_polygon(data = hulls,
+               aes(x = NMDS1, y = NMDS2, fill = Island, group = Island),
+               alpha = 0.3, color = NA) +
+  geom_point(data = site_scores,
+             aes(x = NMDS1, y = NMDS2, color = depth), size = 4) +
+  geom_text(data = site_scores,
+            aes(x = NMDS1, y = NMDS2, label = Locality),
+            size = 3, vjust = 1) +
+  scale_color_viridis(option = "plasma", name = "Mean Depth (m)") +
+  geom_segment(data = species_scores,
+               aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+               arrow = arrow(length = unit(0.2, "cm")),
+               color = "darkgreen", linewidth = 0.5) +
+  geom_text(data = species_scores,
+            aes(x = NMDS1, y = NMDS2, label = ScientificName),
+            color = "darkgreen", fontface = "italic", size = 3,
+            hjust = 0.5, vjust = -0.4) +
+  labs(
+    title = str_wrap("Deep-Sea Glass Sponge Communities across the Hawaiian Archipelago", 48),
+    subtitle = str_wrap("NMDS ordination | Bray-Curtis dissimilarity | sites colored by mean depth", 60),
+    x = "NMDS1", y = "NMDS2"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "right")
+```
+
+## Comparing NMDS and PCoA
+
+When NMDS and PCoA arrange the sites in broadly similar configurations, it provides reassurance that
+the pattern reflects genuine structure in the data rather than an artifact of any single method.
+
+```{r nmds-pcoa-comparison}
+nmds_sites <- scores(nmds, display = "sites") %>%
+  as.data.frame() %>%
+  rownames_to_column("Site")
+
+pcoa_sites <- as.data.frame(pcoa$points[, 1:2]) %>%
+  rownames_to_column("Site") %>%
+  rename(PCo1 = V1, PCo2 = V2)
+
+comparison_df <- left_join(nmds_sites, pcoa_sites, by = "Site")
+
+plot_nmds <- ggplot(comparison_df, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(color = "blue", size = 3) +
+  geom_text(aes(label = Site), vjust = -0.5, size = 3) +
+  labs(title = "NMDS Ordination", x = "NMDS1", y = "NMDS2") +
+  theme_minimal()
+
+plot_pcoa <- ggplot(comparison_df, aes(x = PCo1, y = PCo2)) +
+  geom_point(color = "darkgreen", size = 3) +
+  geom_text(aes(label = Site), vjust = -0.5, size = 3) +
+  labs(title = "PCoA Ordination", x = "PCo1", y = "PCo2") +
+  theme_minimal()
+
+plot_nmds + plot_pcoa
+```
+
+# Inferential Analysis: What Structures the Communities?
+
+The preceding sections describe the data; this section tests specific hypotheses about it, using
+methods designed to withstand scrutiny. The questions are addressed in approximate order of how
+confidently the data can answer them:
+
+1. Does depth structure both community composition and diversity? This is the primary question, and
+   the one the dataset is best equipped to answer.
+2. Which factors actually drive the differences between communities — depth, geography, or both — and
+   could any apparent geographic pattern simply reflect the tendency of nearby sites to resemble one
+   another?
+3. After accounting for depth and the sampling-gear confound, does a genuine difference between
+   islands remain, and does it persist under several robustness checks?
+4. Which species are most characteristic of each island?
+
+In short: depth is the well-supported result, whereas the island difference is weaker and
+confounded. The analysis therefore leads with depth and treats any island effect as credible only if
+it survives explicit sensitivity testing.
+
+Two methodological decisions underpin everything that follows:
+
+- **The dive is the unit of analysis, not the individual sponge.** Treating all 600-plus individual
+  observations as independent would constitute pseudoreplication, since sponges recorded on the same
+  dive are not independent of one another. Aggregating to roughly 33 dives provides valid
+  replication.
+- **Sampling effort and equipment are confounded.** Dives range from a single observation to well
+  over a hundred, and different expeditions used different gear. Rather than ignore this, the
+  analysis quantifies it explicitly and corrects for it.
+
+## Sampling effort and confounds
+
+```{r effort-summary}
+station_data <- cleaned_sponges %>%
+  filter(!is.na(Station), Station != "") %>%
+  rename(Depth = `DepthInMeters (m)`,
+         lat   = `latitude (degrees_north)`,
+         lon   = `longitude (degrees_east)`)
+
+# One row per dive: dominant island/gear, effort (n_obs), mean depth and coordinates.
+station_meta <- station_data %>%
+  group_by(Station) %>%
+  summarise(
+    Island     = names(which.max(table(Island))),
+    Equipment  = names(which.max(table(SamplingEquipment))),
+    n_obs      = n(),
+    mean_depth = mean(Depth, na.rm = TRUE),
+    latitude   = mean(lat,  na.rm = TRUE),
+    longitude  = mean(lon,  na.rm = TRUE),
+    .groups    = "drop"
+  )
+
+# Effort varies by orders of magnitude across dives:
+summary(station_meta$n_obs)
+
+# Island is partly confounded with sampling gear -- keep this in mind when
+# interpreting any "island effect".
+table(Island = station_meta$Island, Gear = station_meta$Equipment)
+```
+
+## The dive-level community matrix
+
+```{r station-matrix}
+station_matrix <- station_data %>%
+  count(Station, ScientificName) %>%
+  pivot_wider(names_from = ScientificName, values_from = n, values_fill = 0) %>%
+  column_to_rownames("Station")
+
+# Drop empty dives and align metadata to the matrix row order (critical for all
+# downstream tests -- vegan returns results in matrix row order).
+station_matrix <- station_matrix[rowSums(station_matrix) > 0, , drop = FALSE]
+station_meta   <- station_meta %>%
+  filter(Station %in% rownames(station_matrix))
+station_meta   <- station_meta[match(rownames(station_matrix), station_meta$Station), ]
+
+# Restrict island comparisons to islands with enough dives to support a test.
+island_n <- table(station_meta$Island)
+island_n
+keep_islands <- names(island_n[island_n >= 3])
+
+dim(station_matrix)
+```
+
+> A note on scope. Once observations are restricted to those identified to species and linked to a
+> specific dive, nearly all of the usable data come from just two islands — Oahu and Hawaii.
+> Accordingly, despite the word "archipelago" in the title, the inferential comparison is effectively
+> Oahu versus Hawaii, with depth as a covariate. Stating this explicitly is preferable to
+> overclaiming an archipelago-wide result.
+
+## Diversity by dive
+
+```{r diversity}
+station_meta <- station_meta %>%
+  mutate(
+    richness = specnumber(station_matrix),
+    shannon  = diversity(station_matrix, index = "shannon"),
+    simpson  = diversity(station_matrix, index = "simpson")
+  )
+
+# Raw richness is effort-biased. Compute rarefied richness only for adequately
+# sampled dives (>= min_effort observations) and rarefy to the smallest such dive
+# so the comparison is fair. Tiny dives (e.g. a single observation) cannot yield a
+# meaningful rarefied estimate and are left as NA.
+min_effort <- 5
+adequate   <- rowSums(station_matrix) >= min_effort   # aligns with station_meta rows
+rare_size  <- min(rowSums(station_matrix)[adequate])
+
+station_meta$rarefied_richness <- NA_real_
+station_meta$rarefied_richness[adequate] <-
+  as.numeric(rarefy(station_matrix[adequate, , drop = FALSE], sample = rare_size))
+
+station_meta %>%
+  select(Station, Island, n_obs, mean_depth, richness, rarefied_richness, shannon, simpson) %>%
+  arrange(desc(shannon))
+```
+
+A guide to the columns: each row corresponds to one dive. *Richness* is the number of taxa recorded,
+but it cannot be compared directly between dives, because a dive that recorded more sponges will
+almost always accumulate more taxa. *Rarefied richness* corrects for this by estimating the number of
+taxa expected if every dive had recorded the same number of individuals, and is therefore the
+appropriate column for comparison. The *Shannon* and *Simpson* indices are standard diversity
+measures that additionally reward an even distribution of individuals across taxa rather than
+dominance by one. Rarefied richness is the measure carried forward into the depth–diversity analysis
+below.
+
+## The depth–diversity relationship
+
+A classic question in deep-sea ecology is whether diversity peaks at intermediate depths or instead
+increases or decreases steadily with depth. Rather than assume a particular form, the model below
+compares a linear and a quadratic (unimodal) fit and lets the data indicate which is better
+supported.
+
+```{r depth-diversity, fig.cap="Effort-corrected (rarefied) species richness against mean dive depth, with the AIC-preferred trend line. A hump-shaped fit would indicate a mid-depth diversity peak; a flat or sloped line indicates a simpler or weak relationship. Point size shows sampling effort."}
+# Raw richness is confounded with effort, so model rarefied richness vs depth
+# (using only the adequately-sampled dives with a non-missing rarefied estimate).
+div_df <- station_meta %>% filter(!is.na(rarefied_richness))
+
+# Deep-sea diversity is classically unimodal (peaks at mid-bathyal depths), so we
+# compare a linear and a quadratic fit rather than assuming a straight line.
+mod_linear <- lm(rarefied_richness ~ mean_depth, data = div_df)
+mod_quad   <- lm(rarefied_richness ~ poly(mean_depth, 2), data = div_df)
+
+AIC(mod_linear, mod_quad)        # lower AIC = better-supported model
+anova(mod_linear, mod_quad)      # is the quadratic term a significant improvement?
+
+# Report whichever the data prefer.
+best_form <- if (AIC(mod_quad) < AIC(mod_linear)) y ~ poly(x, 2) else y ~ x
+summary(if (AIC(mod_quad) < AIC(mod_linear)) mod_quad else mod_linear)
+
+ggplot(div_df, aes(x = mean_depth, y = rarefied_richness)) +
+  geom_point(aes(color = Island, size = n_obs), alpha = 0.8) +
+  geom_smooth(method = "lm", formula = best_form, se = TRUE,
+              color = "grey30", linewidth = 0.8) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Depth–Diversity Relationship (effort-corrected)",
+    subtitle = str_wrap(paste0("Rarefied richness at n = ", rare_size,
+                      " obs/dive | fit = AIC-preferred model | point size = effort"), 60),
+    x = "Mean dive depth (m)", y = "Rarefied species richness"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Rarefaction: accounting for unequal effort
+
+Each curve represents one dive. A curve that flattens indicates that the dive recorded nearly all the
+taxa it was likely to encounter, so its richness estimate is reliable. A curve still rising at its
+endpoint indicates that the dive stopped before reaching saturation, so its richness represents a
+lower bound rather than a complete count. These curves are the visual justification for relying on
+the effort-corrected (rarefied) richness above.
+
+```{r rarefaction, fig.height=5}
+# Curves that have not plateaued indicate under-sampled dives -- a direct visual
+# of why raw richness comparisons are unsafe here.
+rarecurve(as.matrix(round(station_matrix)), step = 5, cex = 0.5, col = "steelblue",
+          xlab = "Observations sampled", ylab = "Species detected",
+          main = "Rarefaction Curves by Dive")
+```
+
+## PERMANOVA: testing composition by depth and island
+
+This is the central test of the report. Because island, depth, and gear are confounded, simply asking
+whether the islands differ would attribute to island any variation that depth or equipment actually
+explains. To avoid this, the analysis uses PERMANOVA — a standard permutation-based test of community
+composition — and fits all three factors simultaneously, evaluating each one after accounting for the
+others (`by = "margin"`). Depth is entered as a quadratic term, since deep-sea gradients are
+typically nonlinear. Under this design, the island term reflects only the variation it explains over
+and above depth and gear.
+
+```{r permanova}
+# Restrict to islands with adequate replication for the grouped test.
+keep_rows     <- station_meta$Island %in% keep_islands
+comm_test     <- station_matrix[keep_rows, , drop = FALSE]
+comm_test     <- comm_test[, colSums(comm_test) > 0, drop = FALSE]
+meta_test     <- station_meta[keep_rows, ]
+bray_test     <- vegdist(comm_test, method = "bray")
+
+# Marginal test: each term controlling for the others. This is the honest test of
+# an "island effect" given the gear/depth confounds.
+set.seed(42)
+adonis_margin <- adonis2(bray_test ~ Equipment + poly(mean_depth, 2) + Island,
+                         data = meta_test, by = "margin", permutations = 999)
+adonis_margin
+
+# Sequential test (terms added in order) for comparison: shows how much depth
+# explains on its own before island is considered.
+set.seed(42)
+adonis_seq <- adonis2(bray_test ~ poly(mean_depth, 2) + Equipment + Island,
+                      data = meta_test, by = "terms", permutations = 999)
+adonis_seq
+```
+
+Interpreting these tables: each row corresponds to one factor. The `R2` column gives the proportion
+of community variation attributable to that factor, and `Pr(>F)` is its permutation p-value (with
+0.05 the conventional threshold for significance). In the marginal table, the key row is `Island`,
+which is evaluated after depth and gear have been accounted for; if it is small and non-significant,
+no island difference remains once the sampling design is taken into account. The sequential table
+enters depth first, illustrating how much of the variation depth explains on its own before the other
+factors are considered.
+
+```{r permanova-dispersion}
+# PERMANOVA can be fooled by unequal within-group dispersion, so test that too.
+# A non-significant betadisper result means a significant PERMANOVA reflects a
+# genuine location (centroid) difference rather than a spread difference.
+bd <- betadisper(bray_test, meta_test$Island)
+set.seed(42)
+permutest(bd)
+```
+
+This dispersion check is important for interpretation. PERMANOVA can register a "difference" when
+groups differ only in how internally variable they are, rather than in their average composition. A
+non-significant betadisper result indicates that the groups have comparable dispersion, which allows
+a significant PERMANOVA result to be interpreted as a genuine difference in community type rather than
+merely in variability.
+
+```{r anosim}
+# ANOSIM as an independent confirmation of group separation.
+set.seed(42)
+anosim(bray_test, grouping = meta_test$Island)
+```
+
+ANOSIM provides an independent assessment of the same question using a different statistic. Its `R`
+ranges from 0 (groups indistinguishable) to 1 (groups completely separated); values near 0 indicate
+that island membership conveys little information about a dive's community, even when the associated
+p-value is small. Agreement between ANOSIM and the PERMANOVA result strengthens confidence in the
+conclusion.
+
+## envfit: Which Variables Drive the Ordination?
+
+```{r station-nmds-envfit, fig.height=6, fig.cap="Dive-level NMDS with fitted environmental vectors. Arrow direction shows the gradient of each variable across the ordination and arrow length its strength; ellipses summarize each island. A long depth arrow indicates depth is a dominant driver. Vector significance is in the printed envfit output."}
+set.seed(42)
+nmds_station <- metaMDS(comm_test, distance = "bray", k = 2, trymax = 200, trace = 0)
+
+ef <- envfit(nmds_station ~ mean_depth + latitude + longitude,
+             data = meta_test, permutations = 999)
+ef
+
+# Build a ggplot ordination with fitted environmental vectors.
+st_scores <- as.data.frame(scores(nmds_station, display = "sites"))
+st_scores$Island <- meta_test$Island
+
+vec_df <- as.data.frame(scores(ef, display = "vectors")) * ordiArrowMul(ef)
+vec_df$var <- rownames(vec_df)
+
+ggplot(st_scores, aes(NMDS1, NMDS2)) +
+  stat_ellipse(aes(color = Island), linewidth = 0.7) +
+  geom_point(aes(color = Island), size = 3, alpha = 0.85) +
+  geom_segment(data = vec_df,
+               aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+               arrow = arrow(length = unit(0.25, "cm")), color = "grey20") +
+  geom_text(data = vec_df, aes(x = NMDS1, y = NMDS2, label = var),
+            color = "grey20", fontface = "bold", vjust = -0.4) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Station-Level NMDS with Environmental Vectors",
+       subtitle = str_wrap(paste0("Bray-Curtis | stress = ", round(nmds_station$stress, 3),
+                         " | vectors = envfit (p-values in printout above)"), 60)) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Robustness and sensitivity checks
+
+A result from a single model specification warrants limited confidence. A genuine island difference
+should persist under reasonable changes to the analysis. The marginal PERMANOVA is therefore rerun
+three ways: with all taxa collapsed to genus (to test whether the result depends on inconsistent
+identification depth); with abundances reduced to presence/absence using the Jaccard index (to test
+whether it depends on observation counts and effort); and with the single largest dive removed (to
+test whether it is driven by one influential sample). The relevant comparison is whether the `Island`
+term remains stable across all three.
+
+```{r robustness}
+run_margin <- function(d, meta) {
+  set.seed(42)
+  adonis2(d ~ Equipment + poly(mean_depth, 2) + Island,
+          data = meta, by = "margin", permutations = 999)
+}
+
+# (1) Genus-collapsed community matrix, aligned to the tested dives.
+genus_matrix <- station_data %>%
+  mutate(Genus = word(ScientificName, 1)) %>%
+  count(Station, Genus) %>%
+  pivot_wider(names_from = Genus, values_from = n, values_fill = 0) %>%
+  column_to_rownames("Station")
+genus_matrix <- genus_matrix[rownames(comm_test), , drop = FALSE]
+genus_matrix <- genus_matrix[, colSums(genus_matrix) > 0, drop = FALSE]
+
+cat("\n--- (1) Genus-collapsed (Bray-Curtis) ---\n")
+run_margin(vegdist(genus_matrix, "bray"), meta_test)
+
+# (2) Presence/absence using Jaccard.
+cat("\n--- (2) Presence/absence (Jaccard) ---\n")
+run_margin(vegdist(comm_test, method = "jaccard", binary = TRUE), meta_test)
+
+# (3) Drop the single largest dive (most observations) and refit.
+mega <- rownames(comm_test)[which.max(rowSums(comm_test))]
+keep_nomega <- rownames(comm_test) != mega
+comm_nomega <- comm_test[keep_nomega, , drop = FALSE]
+comm_nomega <- comm_nomega[, colSums(comm_nomega) > 0, drop = FALSE]
+cat("\n--- (3) Excluding largest dive:", mega, "---\n")
+run_margin(vegdist(comm_nomega, "bray"), meta_test[keep_nomega, ])
+```
+
+The criterion here is consistency. If the island effect retains roughly the same magnitude and
+significance across all three reruns, it can be regarded as robust. If it appears in one
+specification but disappears under genus-level grouping, presence/absence, or removal of the largest
+dive, it is most likely an artifact — and the appropriate conclusion is that no dependable island
+difference exists once depth and sampling design are accounted for.
+
+## Distance-decay: Mantel tests
+
+An apparent island effect could also reflect geographic distance alone: nearby dives tend to support
+similar communities simply because they are close together, regardless of island. Mantel tests
+distinguish these possibilities by correlating community dissimilarity with distance matrices. The
+decisive test is the partial Mantel: after controlling for depth, does geographic distance still
+correlate with community dissimilarity? If it does not, then most of the apparent geographic
+structure is attributable to depth expressed across space.
+
+```{r mantel}
+# Great-circle (haversine) geographic distance in km between dives.
+haversine_dist <- function(lon, lat) {
+  R <- 6371; lon <- lon * pi/180; lat <- lat * pi/180
+  n <- length(lon); m <- matrix(0, n, n)
+  for (i in seq_len(n)) for (j in seq_len(n)) {
+    dlon <- lon[j] - lon[i]; dlat <- lat[j] - lat[i]
+    a <- sin(dlat/2)^2 + cos(lat[i]) * cos(lat[j]) * sin(dlon/2)^2
+    m[i, j] <- 2 * R * asin(sqrt(a))
+  }
+  as.dist(m)
+}
+
+geo_dist   <- haversine_dist(meta_test$longitude, meta_test$latitude)
+depth_dist <- dist(meta_test$mean_depth)
+
+cat("\n--- Community vs DEPTH distance (is there a depth gradient?) ---\n")
+set.seed(42); mantel(bray_test, depth_dist, permutations = 999)
+
+cat("\n--- Community vs GEOGRAPHIC distance (distance-decay?) ---\n")
+set.seed(42); mantel(bray_test, geo_dist, permutations = 999)
+
+cat("\n--- Partial Mantel: geography controlling for depth ---\n")
+set.seed(42); mantel.partial(bray_test, geo_dist, depth_dist, permutations = 999)
+```
+
+Interpreting the results: each test reports a correlation (`r`) and a p-value. A positive
+community–depth correlation supports a depth gradient, while a positive community–distance
+correlation would indicate distance-decay (nearby dives resembling one another). The decisive result
+is the partial Mantel: if the geographic correlation falls toward zero once depth is controlled for,
+the apparent geographic pattern is largely depth expressed across space — again pointing to depth as
+the underlying driver.
+
+## Indicator species by island
+
+```{r indicator-species}
+# Indicator Species Analysis (IndVal): which species are characteristic of each
+# island? Requires the 'indicspecies' package; skipped gracefully if absent.
+if (requireNamespace("indicspecies", quietly = TRUE)) {
+  set.seed(42)
+  indval <- indicspecies::multipatt(
+    comm_test, meta_test$Island,
+    func = "IndVal.g", control = permute::how(nperm = 999)
+  )
+  summary(indval, indvalcomp = TRUE)
+} else {
+  message("Install 'indicspecies' (and 'permute') to run indicator species analysis.")
+}
+```
+
+Each taxon listed is statistically associated with a particular island or island group. The
+indicator statistic (closer to 1 denotes a stronger, more exclusive association) and its p-value (low
+values indicate the association is unlikely to be due to chance) convey how reliable each association
+is. This analysis complements the PERMANOVA: even where the overall island difference is weak,
+individual taxa may still be characteristic of one island. Such associations are informative
+natural-history detail, but should be interpreted in light of the small number of dives involved.
+
+## Community heatmap
+
+```{r heatmap, fig.height=7, fig.cap="Community matrix as a heatmap: each cell is the (log) count of a taxon on a dive, with dives grouped by island. Vertical bands of color reveal taxa that dominate across many dives; gaps reveal taxa restricted to particular dives or islands."}
+heat_df <- station_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("Station") %>%
+  pivot_longer(-Station, names_to = "Species", values_to = "count") %>%
+  left_join(station_meta %>% select(Station, Island), by = "Station")
+
+ggplot(heat_df, aes(x = Species, y = Station, fill = log1p(count))) +
+  geom_tile(color = "grey92") +
+  facet_grid(Island ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_viridis(option = "mako", name = "log(count + 1)") +
+  labs(title = "Glass Sponge Community Matrix (dive × species)",
+       x = NULL, y = "Dive (Station)") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        plot.title = element_text(face = "bold"))
+```
+
+## Spatial distribution of dives
+
+The dives are plotted on the Hawaiian seafloor itself. When the `marmap` package is available, the
+basemap is real NOAA bathymetry (with depth contours), which puts each dive in its actual physical
+setting — on the island slopes and offshore terraces where glass sponges occur. Points are colored by
+island and sized by sampling effort, making the two-island concentration of well-sampled dives
+(Oahu and Hawaii) immediately apparent. If `marmap` is not installed, the code falls back to a simple
+coastline outline so the document still knits.
+
+```{r map, fig.height=6.5, fig.cap="Dive locations across the Main Hawaiian Islands, shown on NOAA bathymetry where available. Each point is one dive, colored by island and sized by sampling effort."}
+map_pts <- station_data %>%
+  group_by(Station) %>%
+  summarise(lon = mean(lon, na.rm = TRUE), lat = mean(lat, na.rm = TRUE),
+            depth = mean(Depth, na.rm = TRUE), n = n(),
+            Island = names(which.max(table(Island))), .groups = "drop")
+
+xlim <- c(-160.5, -154.5); ylim <- c(18.5, 22.5)
+
+# Try to download/cache NOAA bathymetry for a true seafloor basemap.
+bathy <- NULL
+if (requireNamespace("marmap", quietly = TRUE)) {
+  bathy <- tryCatch(
+    marmap::getNOAA.bathy(lon1 = xlim[1], lon2 = xlim[2],
+                          lat1 = ylim[1], lat2 = ylim[2],
+                          resolution = 2, keep = TRUE),
+    error = function(e) NULL)
+}
+
+if (!is.null(bathy)) {
+  bathy_df <- marmap::fortify.bathy(bathy)
+
+  ggplot() +
+    geom_raster(data = bathy_df, aes(x = x, y = y, fill = z), show.legend = FALSE) +
+    geom_contour(data = bathy_df, aes(x = x, y = y, z = z),
+                 breaks = c(-500, -1000, -2000, -3000, -4000),
+                 colour = "grey75", linewidth = 0.2) +
+    marmap::scale_fill_etopo(guide = "none") +
+    geom_point(data = map_pts, aes(x = lon, y = lat, colour = Island, size = n), alpha = 0.9) +
+    scale_colour_brewer(palette = "Set1", name = "Island") +
+    scale_size_continuous(name = "Observations\n(effort)") +
+    coord_quickmap(xlim = xlim, ylim = ylim) +
+    labs(title = "Glass Sponge Dive Locations on the Hawaiian Seafloor",
+         subtitle = str_wrap("Basemap: NOAA bathymetry with depth contours | points = dives, colored by island and sized by effort", 70),
+         x = "Longitude", y = "Latitude") +
+    theme_minimal(base_size = 11) +
+    theme(plot.title = element_text(face = "bold"))
+} else {
+  # Fallback: simple coastline outline (no bathymetry).
+  p_map <- ggplot(map_pts, aes(lon, lat))
+  if (requireNamespace("maps", quietly = TRUE)) {
+    p_map <- p_map + borders("world", xlim = xlim, ylim = ylim,
+                             fill = "grey88", colour = "grey70")
+  }
+  p_map +
+    geom_point(aes(colour = Island, size = n), alpha = 0.85) +
+    scale_colour_brewer(palette = "Set1", name = "Island") +
+    scale_size_continuous(name = "Observations") +
+    coord_quickmap(xlim = xlim, ylim = ylim) +
+    labs(title = "Glass Sponge Dive Locations, Main Hawaiian Islands",
+         subtitle = str_wrap("Install 'marmap' for a bathymetric basemap | points sized by sampling effort", 70),
+         x = "Longitude", y = "Latitude") +
+    theme_minimal(base_size = 11) +
+    theme(plot.title = element_text(face = "bold"))
+}
+```
+
+# Key Findings
+
+Observations spanning the full cleaned dataset:
+
+- Glass sponges were recorded from approximately 90 m to over 2,700 m, with the majority of records
+  concentrated in the upper 1,000 m.
+- A small number of taxa account for most observations (notably *Regadrella*, *Ijimalophus
+  hawaiicus*, and *Farrea occa*), and these taxa show clear depth partitioning.
+
+The primary result — depth:
+
+- Depth is the clearest and best-supported driver of community structure. It is confirmed by three
+  complementary analyses that point in the same direction: a gradient term in the PERMANOVA, a fitted
+  vector in the ordination, and a Mantel correlation of community dissimilarity with depth. For
+  diversity, an AIC comparison determines whether a linear or unimodal relationship is better
+  supported.
+- Diversity is reported on an effort-corrected (rarefied) basis throughout, because dives differed
+  greatly in effort and raw counts would favor the most intensively sampled dives.
+
+The secondary result — islands, interpreted conditionally:
+
+- The comparison is at most an Oahu-versus-Hawaii contrast, as these are the only two islands with
+  sufficient records to test; characterizing the result as archipelago-wide would overstate the data.
+- Island identity is confounded with sampling gear and depth, so the only defensible test evaluates
+  what island explains after those factors are accounted for.
+- Even then, a genuine island difference must persist under the robustness checks (genus-level
+  grouping, presence/absence, removal of the largest dive) and be distinguishable from distance-decay.
+  If it does not, the appropriate conclusion is that no island effect remains once depth and sampling
+  design are taken into account.
+- With roughly 12 dives on one island and 21 on the other, statistical power is low; a non-significant
+  result indicates insufficient evidence rather than a demonstrated absence of difference.
+
+In summary, this report presents its conclusions together with their associated uncertainty rather
+than as unqualified claims. The well-supported finding is that depth structures these communities;
+the island result is reported conditionally and only to the extent the data permit.
+
+# Discussion
+
+Taken together, the analyses are mutually consistent. The clearest and most reproducible signal in
+the data is depth: the sponges occupy distinct depth bands, depth registers as a community gradient
+in both the ordination and the distance-based tests, and it carries substantial weight in the
+PERMANOVA before any other factor is considered. It is also the conclusion the data are best
+positioned to support, since the observations span the depth range densely and depth is measured
+directly for every record.
+
+The island question is more tenuous, and the analysis is designed to treat it accordingly. Because
+island, gear, depth, and geographic distance are interrelated, an uncritical comparison would
+attribute genuine differences to island when another factor is responsible. Testing island only after
+gear and depth, repeating the test under three alternative specifications, and asking whether distance
+alone could account for the pattern collectively place the burden of proof where it belongs.
+Whichever way the results fall, the conclusion is defensible: if the island effect survives all of
+these checks, it is a credible secondary finding; if it does not, then no island difference exists
+beyond depth and the structure of the sampling.
+
+This two-tier outcome — a confident conclusion regarding depth and a carefully bounded one regarding
+geography — is itself the central result. It reflects what opportunistic deep-sea exploration data can
+and cannot support, and it is more useful than an overstated claim of archipelago-wide biogeographic
+structure.
+
+# Limitations
+
+- **Observational rather than standardized data.** The records derive from opportunistic ROV and
+  submersible dives, so detection depends on dive duration, visibility, and substrate. Abundances are
+  observation counts rather than density estimates, which is why composition is cross-checked with
+  presence/absence (Jaccard) and richness is rarefied rather than compared directly.
+- **Confounded sampling design.** Island, sampling gear, and expedition are correlated and only
+  partially separable, so even the marginal island term has limited interpretability and should be
+  read as variation beyond depth and gear rather than a clean biogeographic effect.
+- **Low statistical power.** The community comparison rests on roughly 12 dives (Hawaii) and 21 dives
+  (Oahu) and roughly two dozen taxa, several of them rare. A non-significant result indicates insufficient
+  evidence rather than a demonstrated absence, and effect-size estimates are correspondingly
+  uncertain.
+- **Mixed taxonomic resolution.** Identifications range from genus to subspecies. The genus-level
+  robustness analysis tests whether conclusions depend on this, but some finer-scale ecological
+  structure may be obscured regardless.
+- **Two-island scope.** After quality filtering, only Oahu and Hawaii retain sufficient
+  dive-referenced records, so the results should not be generalized to the wider archipelago.
+
+```{r session-info}
+# Recorded for reproducibility.
+sessionInfo()
+```
