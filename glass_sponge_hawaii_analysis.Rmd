@@ -61,6 +61,14 @@ on for shelter and settlement. Because the animals occur at depths that are rare
 what is known about them comes from opportunistic remotely operated vehicle (ROV) and submersible
 dives rather than from systematic sampling programs.
 
+```{r sponge-photo, echo=FALSE, out.width="70%", fig.align="center", fig.cap="A deep-sea glass sponge (Class Hexactinellida). Image: NOAA Office of Ocean Exploration and Research (public domain)."}
+# Displays the sponge photo if it is present next to this .Rmd; skipped otherwise
+# so the report still knits without it.
+if (file.exists("glass-sponge.jpg")) {
+  knitr::include_graphics("glass-sponge.jpg")
+}
+```
+
 This report analyzes 964 such observations from around the Main Hawaiian Islands, collected by
 NOAA's Office of Ocean Exploration and Research. The central question is simple to state but
 difficult to answer rigorously: which environmental and geographic factors determine where

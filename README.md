@@ -2,6 +2,10 @@
 
 A reproducible analysis of how depth and geography structure deep-sea glass sponge (Class: Hexactinellida) communities in the Main Hawaiian Islands, using observational records from NOAA's Office of Ocean Exploration and Research.
 
+![A deep-sea glass sponge (Class Hexactinellida) observed during a NOAA ocean exploration dive.](glass-sponge.jpg)
+
+*A deep-sea glass sponge (Hexactinellida). Image: NOAA Office of Ocean Exploration and Research (public domain).*
+
 ---
 
 ## View the Report
