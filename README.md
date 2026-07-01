@@ -90,12 +90,6 @@ Quantitative results (effect sizes, *p*-values, *R²*) are produced when the rep
 - **Low statistical power.** The community comparison rests on ~12 (Hawaii) vs. ~21 (Oahu) dives and ~22 taxa. A non-significant result means *insufficient evidence*, not *proven absence*.
 - **Mixed taxonomic resolution.** Identifications range from genus to subspecies; the genus-collapsed robustness run tests whether conclusions depend on this.
 
-## Future Work
-
-- Standardized transect or quantitative survey sampling to remove the effort/gear confounds.
-- Environmental covariates beyond depth (temperature, oxygen, substrate, current) to model habitat directly.
-- Archipelago-wide coverage with adequate replication per island to test biogeography properly.
-
 ## Reproduce
 
 ```r
